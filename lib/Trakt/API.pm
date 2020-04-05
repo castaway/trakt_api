@@ -66,7 +66,8 @@ use strictures 2;
 use LWP::UserAgent;
 use JSON;
 use Data::Dumper;
-use OAuthHandler;
+use MiddleMan::OAuthHandler;
+use LWP::Authen::OAuth2;
 
 use Moo;
 
@@ -117,6 +118,7 @@ skip the login (check API docs for how long tokens last).
 =cut
 
 has 'refresh_token' => ( is => 'rw' );
+has 'oauth' => (is => 'rw' );
 has '_auth_endpoint' => ( is => 'lazy', default => sub { 'https://api.trakt.tv/oauth/authorize' });
 has '_token_endpoint' => ( is => 'lazy', default => sub { 'https://api.trakt.tv/oauth/token' });
 has '_code_endpoint' => ( is => 'lazy', default => sub { 'https://api.trakt.tv/oauth/device/code' } );
@@ -125,13 +127,13 @@ has '_headers' => ( is => 'lazy', default => sub {
     my ($self) = @_;
     return {
         'Content-Type' => 'application/json',
-        'Authorization'=> "Bearer " . $self->access_token,
+#        'Authorization'=> "Bearer " . $self->access_token,
         'trakt-api-version' => 2,
         'trakt-api-key' => $self->config->{client_id},
     };
 });
 has '_baseuri' => ( is => 'lazy', default => sub { 'https://api.trakt.tv/'; });
-has '_ua' => ( is => 'lazy', default => sub { LWP::UserAgent->new(); });
+# has '_ua' => ( is => 'lazy', default => sub { LWP::UserAgent->new(); });
 
 =head1 METHODS
 
@@ -155,22 +157,28 @@ sub login {
         return;
     }
 
-    if(!$self->access_token) {
-        my $oa = OAuthHandler->new({
-            conf => {
-                code_endpoint          => $self->_code_endpoint,
-                code_token_endpoint    => $self->_code_token_endpoint,
-                %{ $self->config },
+    my $oa = MiddleMan::OAuthHandler->new({
+        conf => {
+            code_endpoint          => $self->_code_endpoint,
+            code_token_endpoint    => $self->_code_token_endpoint,
+            save_tokens => sub {
+                my ($token_str) = @_;
+                $DB::single=1;
+                $self->config->{token_string} = $token_str;
             },
-            callback_sub => sub {
-                my ($str) = @_;
-                print "$str\n";
-            },
-        });
-        my $tokens = $oa->authenticate();
-        $self->access_token($tokens->{access_token});
-        $self->refresh_token($tokens->{refresh_token});
-    }
+            %{ $self->config },
+        },
+        callback_sub => sub {
+            my ($str) = @_;
+            print "$str\n";
+        },
+    });
+    ## this might die!
+    
+    ## NB: if conf->{token_string} is still valid, this just sets up
+    ## the object and returns it
+    my $oauth = $oa->authenticate();
+    $self->oauth($oauth);
 }
 
 =head2 get($path)
@@ -188,7 +196,7 @@ sub get {
     
     my $uri = URI->new_abs($path, $self->_baseuri);
     print("Fetch $uri with ", Dumper($self->_headers));
-    my $resp = $self->_ua->get($uri, %{ $self->_headers });
+    my $resp = $self->oauth->get($uri, %{ $self->_headers });
 
     if ($resp->code == 404) {
         return { };
@@ -223,7 +231,7 @@ sub post {
     $self->login();
 
     my $uri = URI->new_abs($path, $self->_baseuri);
-    my $resp = $self->_ua->post($uri, %{ $self->_headers }, Content => encode_json($content));
+    my $resp = $self->oauth->post($uri, %{ $self->_headers }, Content => encode_json($content));
     if(!$resp->is_success) {
         die "Post to $uri failed, " . $resp->status_line;
 #        say $resp->status_line;

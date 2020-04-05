@@ -1,4 +1,42 @@
-package OAuthHandler;
+package MiddleMan::OAuthHandler;
+
+=head1 NAME
+
+MiddleMan::OAuthHandler - Deal with OAuth for commandline tools
+
+=head1 SYNOPSIS
+
+   use MiddleMan::OauthHandler;
+   
+   # device code:
+   my $oauth = MiddleMan::OauthHandler->new({
+     conf => {
+       client_id              => 'myid',
+       client_secret          => 'mysecret',
+       code_endpoint          => 'https://foo.com/code',
+       code_token_endpoint    => 'https://foo.com/code/token',
+       callback_sub           => sub { print($_[0]); },
+       token_string           => 'mystr',
+     }
+   });
+
+   # browser auth
+   my $oauth = MiddleMan::OauthHandler->new({
+     conf => {
+       client_id              => 'myid',
+       client_secret          => 'mysecret',
+       authorization_endpoint => 'https://foo.com/authorize',
+       token_endpoint         => 'https://foo.com/token',
+       service_name           => 'trakt_api',
+       token_string           => 'mystr',
+     }
+   });
+
+=head1 DESCRIPTION
+
+
+
+=cut
 
 use Moo;
 use LWP::Authen::OAuth2;
@@ -14,11 +52,38 @@ has 'middleman_host'   => (is => 'rw', default => sub { 'http://desert-island.me
 has 'middleman_email' => (is => 'rw');
 has 'conf'    => (is => 'ro');
 has '_ua'     => (is => 'ro', default => sub { LWP::UserAgent->new(); });
+has '_oauth'  => (is => 'lazy', default => sub {
+    my ($self) = @_;
+    LWP::Authen::OAuth2->new(%{ $self->conf });
+});
 has 'callback_sub' => (is => 'ro');
 
-# keyconf
+=head2 authenticate
+
+Creates an L<LWP::Authen::OAuth2> object using the config from the
+caller, returns it if the token_string was provided, and not expired
+yet.
+
+If caller specified B<code_endpoint> uri, then use device code auth to
+login, and return OAuth2 object. L</callback_str> will be used to
+return the urls needed to enter the code.
+
+Else use normal browser auth, using L</callback_str> to output urls to
+visit.
+
+=cut
+
 sub authenticate {
     my ($self) = @_;
+
+    # this loads using the ole token_string (assuming caller saved it
+    # and passed it back)
+    my $oa = $self->_oauth();
+    if($oa->access_token && $oa->access_token->expires_in > 20) {
+        # not expired yet? just use it
+        return $oa;
+    }
+    
     if($self->conf->{code_endpoint}) {
         ## We're using a device code fetch (see https://trakt.docs.apiary.io/#reference/authentication-oauth/authorize/authorize-application)
         return $self->device_code_auth();
@@ -151,9 +216,9 @@ sub device_code_auth {
         );
     ## hmm ugly, this doesnt have a setter:
     $oauth2->{access_token} = $token;
-    ## or OAuth2 object etc (see full_auth)
-    return $oauth2->access_token->to_ref;
-    
+    ## manually cos we're kinda cheating:
+    $self->conf->{save_tokens}->($oauth2->token_string);
+    return $oauth2;
 }
 
 1;
